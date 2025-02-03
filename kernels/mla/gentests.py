@@ -40,19 +40,10 @@ def precompute_freqs_cis(seq_len, dim, base=10000.0):
     Returns:
     - freqs: Complex tensor with precomputed rotation frequencies
     """
-    # Calculate frequencies
     freqs = 1.0 / (base ** (torch.arange(0, dim, 2).float() / dim))
-    
-    # Generate position tensor
     t = torch.arange(seq_len, dtype=freqs.dtype)
-    
-    # Compute the frequencies for each position
     freqs = torch.outer(t, freqs)
-    
-    # Convert to complex numbers
     emb = torch.cat([freqs, freqs], dim=-1)
-    
-    # Convert to complex tensor
     return torch.polar(torch.ones_like(emb), emb)
 
 
@@ -67,23 +58,14 @@ def apply_rope(x, freqs_cis):
     Returns:
     - Rotated tensor
     """
-    # Reshape x into (..., seq_len, head_dim/2, 2)
     x_complex = torch.view_as_complex(x.float().reshape(*x.shape[:-1], -1, 2))
-    
-    # Reshape freqs to match x_complex shape
     freqs_cis = freqs_cis[:x.shape[-2]].to(x.device)
-    
-    # Rotate the complex tensor
     rotated_x_complex = x_complex * freqs_cis
-    
-    # Convert back to real tensor
     return torch.view_as_real(rotated_x_complex).reshape(x.shape).to(x.dtype)
 
 
-# Precompute RoPE frequencies and apply the transformation
 freqs_cis = precompute_freqs_cis(N, D // 2).to(q.device).to(q.dtype)
 
-# Apply RoPE to query and key tensors
 q_rot = apply_rope(q, freqs_cis)
 k_rot = apply_rope(k, freqs_cis)
 softmax_scale = 1 / math.sqrt(D)
@@ -91,16 +73,13 @@ q_rot = q_rot * softmax_scale
 
 scores = torch.matmul(q_rot, k_rot.transpose(2, 3))
 
-# Apply causal mask if enabled
 if causal:
     mask = torch.full((N, N), float('-inf'), device=q.device, dtype=q.dtype)
     mask = torch.triu(mask, diagonal=1)
     scores = scores + mask
 
-# Apply softmax to attention scores
 scores = torch.nn.functional.softmax(scores, dim=-1).type_as(q)
 
-# Calculate the output by multiplying with values
 output = torch.matmul(scores, v)
 
 # --- Backward Pass ---
@@ -148,4 +127,3 @@ with open(filename, 'w') as f:
         flat_tensor = tensor.to(torch.float32).flatten().detach().cpu().numpy()
         for value in trange(flat_tensor.size):
             f.write(repr(float(flat_tensor[value])) + ' ')
-
