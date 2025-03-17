@@ -763,6 +763,7 @@ void nsa_forward_fwd(const __grid_constant__ nsa_globals g) {
                 // TODO: ask about bf issue
                 rt_bf<ROWS, ATTN_D> q_tile, k_tile, v_tile;
                 rt_fl<ROWS, ROWS> attn_scores; // float32 intermediate for scores
+                rt_bf<ROWS, ROWS> attn_scores_mma; 
                 rt_bf<ROWS, ATTN_D> out_update;
 
                 // Load query and key from shared memory.
@@ -836,7 +837,7 @@ void nsa_forward_fwd(const __grid_constant__ nsa_globals g) {
                 }
                 __syncthreads();
                 // Exponentiate and sum.
-                for (int r = 0; r < ROWS; r++) {
+                for (int r = 0; r < std::min(9, ROWS); r++) {
                     float local_sum = 0.f;
                     float local_max = -1e9f;
                     reinterpret_cast<float*>(&row_max)[r] = local_max;  // Set row r
@@ -857,13 +858,63 @@ void nsa_forward_fwd(const __grid_constant__ nsa_globals g) {
                     }
                     __syncthreads();
                 }
+                // for (int r = 9; r < 10; r++) {
+                //     float local_sum = 0.f;
+                //     float local_max = -1e9f;
+                //     reinterpret_cast<float*>(&row_max)[r] = local_max;  // Set row r
+                //     float m = reinterpret_cast<float*>(&row_max)[r];    // Get row r
+                //     reinterpret_cast<float*>(&row_sum)[r] = local_sum;
+                //     // return;
+                //     // for (int c = threadIdx.x; c < ROWS; c += NUM_THREADS) {
+                //     // if (threadIdx.x >= ROWS) {
+                //     //     return;
+                //     // }
+                //     for (int c = threadIdx.x; c < ROWS; c += NUM_THREADS) {
+                //         return;
+                //         float score = reinterpret_cast<float*>(&attn_scores)[r * ROWS + c];
+                //         return;
+                //         float exp_val = expf(score - m);
+                //         reinterpret_cast<float*>(&attn_scores)[r * ROWS + c] = exp_val;
+                //         local_sum += exp_val;
+                //     }
+                //     if (threadIdx.x == 0) {
+                //         return; 
+                //         // rt_fl<ROWS, ATTN_D> tmp_sum;
+                //         // tmp_sum.set<0>(local_sum);
+                //         // set_row(row_sum, tmp_sum, r);
+                //         float* row_sum_ptr = reinterpret_cast<float*>(&row_sum);
+                //         row_sum_ptr[r] = local_sum;  // Direct assignment via pointer
+                //     }
+                //     __syncthreads();
+                // }
                 __syncthreads();
 
                 // Now compute weighted sum: out_update = softmax(attn_scores) @ v_tile.
                 // Load value tile.
                 load(v_tile, v_s[warpid]);
                 zero(out_update);
-                mma_AB(out_update, attn_scores, swap_layout_inplace(v_tile), out_update);
+                // TODO: copy step on attn_scores?
+                copy(attn_scores_mma, attn_scores); 
+                // swap_layout_inplace(v_tile)
+                // mma_AB(reinterpret_cast<bf16*>(out_update), attn_scores_mma, v_tile, (out_update));
+
+                // rt_bf<ATTN_D, ROWS> v_tile_T;
+                // transpose_sep(v_tile_T, v_tile);
+                // mma_ABt(out_update, attn_scores_mma, v_tile_T, out_update); 
+
+                // rt_fl<ATTN_D, ROWS> out_update_f;
+                // copy(out_update_f, out_update);  // Convert bf16 → float
+
+                // rt_bf<ATTN_D, ROWS, ducks::rt_layout::row> v_tile_T;
+                //copy(v_tile_T, v_tile);  // Ensure row-major
+
+                //mma_ABt(out_update_f, attn_scores_mma, v_tile_T, out_update_f);
+
+                //copy(out_update, out_update_f);  // Convert float → bf16
+
+
+                //mma_AtBt(out_update, swap_layout_inplace(attn_scores_mma), v_tile, out_update);
+                //     rows, attn_d   rows, rows    rows, attn_d              rows, attn_d                                                      
 
                 // Accumulate result into the output accumulator.
                 // for (int i = threadIdx.x; i < ROWS * ATTN_D; i += NUM_THREADS) {
@@ -872,9 +923,11 @@ void nsa_forward_fwd(const __grid_constant__ nsa_globals g) {
                 // }
                 bf16* o_ptr = reinterpret_cast<bf16*>(&o_s[warpid]);
                 bf16* upd_ptr = reinterpret_cast<bf16*>(&out_update);
+                // TODO: FIGURE OUT WHY THIS IS THE PROBLEM PART
                 for (int i = threadIdx.x; i < ROWS * ATTN_D; i += NUM_THREADS) {
                     o_ptr[i] = o_ptr[i] + upd_ptr[i];
                 }
+                // return;
             }
             __syncthreads();
         } // end loop over neighbor blocks
